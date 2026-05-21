@@ -1,24 +1,42 @@
 const express = require("express");
-
 const dotenv = require("dotenv");
-
 const cors = require("cors");
-
-const jwt = require("jsonwebtoken");
-
 const cookieParser = require("cookie-parser");
+const { MongoClient, ServerApiVersion } = require("mongodb");
 
-const {
-  MongoClient,
-  ServerApiVersion,
-  ObjectId,
-} = require("mongodb");
+const authRoutes = require("./routes/auth");
+const tutorRoutes = require("./routes/tutors");
+const bookingRoutes = require("./routes/bookings");
+const verifyToken = require("./middleware/verifyToken");
 
 dotenv.config();
 
 const app = express();
-
 const port = process.env.PORT || 8080;
+const MONGODB_URI = process.env.MONGODB_URI;
+const ACCESS_TOKEN_SECRET =
+  process.env.ACCESS_TOKEN_SECRET || process.env.BETTER_AUTH_SECRET;
+
+if (!MONGODB_URI || !ACCESS_TOKEN_SECRET) {
+  console.error("Missing required environment variables:");
+  if (!MONGODB_URI) console.error("  - MONGODB_URI");
+  if (!ACCESS_TOKEN_SECRET)
+    console.error("  - ACCESS_TOKEN_SECRET or BETTER_AUTH_SECRET");
+  console.error(
+    "Please add the missing variables to .env or .env.local and restart the server."
+  );
+  process.exit(1);
+}
+
+process.env.ACCESS_TOKEN_SECRET = ACCESS_TOKEN_SECRET;
+
+const client = new MongoClient(MONGODB_URI, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
+});
 
 app.use(
   cors({
@@ -30,119 +48,42 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
-const uri = process.env.MONGODB_URI;
-
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
-
-
-const verifyToken = (req, res, next) => {
-
-  const token = req.cookies?.token;
-
-  if (!token) {
-    return res.status(401).send({
-      success: false,
-      message: "Unauthorized Access",
-    });
-  }
-
-  jwt.verify(
-    token,
-    process.env.ACCESS_TOKEN_SECRET,
-    (err, decoded) => {
-
-      if (err) {
-        return res.status(401).send({
-          success: false,
-          message: "Unauthorized Access",
-        });
-      }
-
-      req.user = decoded;
-      next();
-    }
-  );
-};
-
-const tutorRoutes = require("./routes/tutors");
-const bookingRoutes = require("./routes/bookings");
-
 async function run() {
-
   try {
-
     await client.connect();
-
     console.log("MongoDB Connected Successfully");
 
     const db = client.db("tutordb");
-
+    const usersCollection = db.collection("users");
     const tutorsCollection = db.collection("tutors");
-
     const bookingsCollection = db.collection("bookings");
 
-    
-    app.post("/jwt", async (req, res) => {
-
-      const user = req.body;
-
-      const token = jwt.sign(
-        user,
-        process.env.ACCESS_TOKEN_SECRET,
-        { expiresIn: "7d" }
-      );
-
-      res.cookie("token", token, {
-        httpOnly: true,
-        secure: false, 
-        sameSite: "lax",
-      });
-
-      res.send({ success: true });
-    });
-
-    app.post("/signout", (req, res) => {
-
-      res.clearCookie("token");
-
-      res.send({ success: true });
-    });
-app.post("/signin", (req, res) => {
-    
-
-      res.send({ success: true });
-    });
-
-
+    app.use("/auth", authRoutes(usersCollection));
     app.use(
       "/",
       tutorRoutes(tutorsCollection, verifyToken)
     );
-
     app.use(
       "/",
-      bookingRoutes(
-        bookingsCollection,
-        tutorsCollection,
-        verifyToken
-      )
+      bookingRoutes(bookingsCollection, tutorsCollection, verifyToken)
     );
 
+    app.use((req, res) => {
+      res.status(404).send({
+        success: false,
+        message: "Route not found",
+      });
+    });
   } catch (error) {
-    console.log(error);
+    console.error("Server startup failed:", error);
+    process.exit(1);
   }
 }
 
 run();
 
 app.get("/", (req, res) => {
-  res.send("MediQueue Server Running");
+  res.send("Tutor Booking Server Running");
 });
 
 app.listen(port, () => {

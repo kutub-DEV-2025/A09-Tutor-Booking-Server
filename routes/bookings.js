@@ -8,193 +8,169 @@ module.exports = (
   tutorsCollection,
   verifyToken
 ) => {
+  router.post("/bookings", verifyToken, async (req, res) => {
+    try {
+      const { tutorId, studentName, phone } = req.body;
 
-  /*
-  =========================
-      CREATE BOOKING
-  =========================
-  */
-  router.post(
-    "/bookings",
-    verifyToken,
-    async (req, res) => {
-
-      try {
-
-        const {
-          tutorId,
-          studentEmail,
-          tutorName,
-          subject,
-        } = req.body;
-
-        // validation
-        if (!tutorId || !studentEmail) {
-          return res.status(400).send({
-            success: false,
-            message: "Missing Required Data",
-          });
-        }
-
-        if (!ObjectId.isValid(tutorId)) {
-          return res.status(400).send({
-            success: false,
-            message: "Invalid Tutor ID",
-          });
-        }
-
-        const tutor =
-          await tutorsCollection.findOne({
-            _id: new ObjectId(tutorId),
-          });
-
-        if (!tutor) {
-          return res.status(404).send({
-            success: false,
-            message: "Tutor Not Found",
-          });
-        }
-
-        if (tutor.totalSlot <= 0) {
-          return res.status(400).send({
-            success: false,
-            message: "No Slots Available",
-          });
-        }
-
-        // insert booking
-        const result =
-          await bookingsCollection.insertOne({
-            tutorId,
-            studentEmail,
-            tutorName,
-            subject,
-            status: "booked",
-            createdAt: new Date(),
-          });
-
-        // decrease slot
-        await tutorsCollection.updateOne(
-          { _id: new ObjectId(tutorId) },
-          { $inc: { totalSlot: -1 } }
-        );
-
-        res.send({
-          success: true,
-          message: "Booking Created Successfully",
-          insertedId: result.insertedId,
-        });
-
-      } catch (error) {
-
-        console.log(error);
-
-        res.status(500).send({
+      if (!tutorId || !studentName || !phone) {
+        return res.status(400).send({
           success: false,
-          message: "Server Error",
+          message: "Tutor ID, student name and phone are required",
         });
       }
-    }
-  );
 
-  /*
-  =========================
-      GET USER BOOKINGS
-  =========================
-  */
-  router.get(
-    "/my-bookings",
-    verifyToken,
-    async (req, res) => {
-
-      try {
-
-        const email = req.query.email;
-
-        const bookings =
-          await bookingsCollection
-            .find({ studentEmail: email })
-            .toArray();
-
-        res.send(bookings);
-
-      } catch (error) {
-
-        res.status(500).send({
+      if (!ObjectId.isValid(tutorId)) {
+        return res.status(400).send({
           success: false,
-          message: "Failed To Get Bookings",
+          message: "Invalid Tutor ID",
         });
       }
+
+      const tutor = await tutorsCollection.findOne({
+        _id: new ObjectId(tutorId),
+      });
+
+      if (!tutor) {
+        return res.status(404).send({
+          success: false,
+          message: "Tutor Not Found",
+        });
+      }
+
+      if (tutor.totalSlot <= 0) {
+        return res.status(400).send({
+          success: false,
+          message: "This session is fully booked. You can't join at the moment.",
+        });
+      }
+
+      const sessionDate = tutor.sessionStartDate
+        ? new Date(tutor.sessionStartDate)
+        : null;
+
+      if (sessionDate && sessionDate > new Date()) {
+        return res.status(400).send({
+          success: false,
+          message: "Booking is not available yet for this tutor",
+        });
+      }
+
+      const booking = {
+        tutorId,
+        tutorName: tutor.tutorName,
+        studentName,
+        studentEmail: req.user.email,
+        phone,
+        subject: tutor.subject || req.body.subject || "",
+        status: "booked",
+        createdAt: new Date(),
+      };
+
+      const result = await bookingsCollection.insertOne(booking);
+
+      await tutorsCollection.updateOne(
+        { _id: new ObjectId(tutorId) },
+        { $inc: { totalSlot: -1 } }
+      );
+
+      res.send({
+        success: true,
+        message: "Booking created successfully",
+        insertedId: result.insertedId,
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).send({
+        success: false,
+        message: "Server Error",
+      });
     }
-  );
+  });
 
-  /*
-  =========================
-      CANCEL BOOKING
-  =========================
-  */
-  router.patch(
-    "/bookings/:id",
-    verifyToken,
-    async (req, res) => {
+  router.get("/my-bookings", verifyToken, async (req, res) => {
+    try {
+      const bookings = await bookingsCollection
+        .find({ studentEmail: req.user.email })
+        .sort({ createdAt: -1 })
+        .toArray();
 
-      try {
+      res.send(bookings);
+    } catch (error) {
+      console.error(error);
+      res.status(500).send({
+        success: false,
+        message: "Failed to get bookings",
+      });
+    }
+  });
 
-        const id = req.params.id;
+  router.patch("/bookings/:id", verifyToken, async (req, res) => {
+    try {
+      const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({
-            success: false,
-            message: "Invalid Booking ID",
-          });
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({
+          success: false,
+          message: "Invalid Booking ID",
+        });
+      }
+
+      const booking = await bookingsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!booking) {
+        return res.status(404).send({
+          success: false,
+          message: "Booking Not Found",
+        });
+      }
+
+      if (booking.studentEmail !== req.user.email) {
+        return res.status(403).send({
+          success: false,
+          message: "Forbidden: you can only cancel your own bookings",
+        });
+      }
+
+      if (booking.status === "cancelled") {
+        return res.status(400).send({
+          success: false,
+          message: "Booking is already cancelled",
+        });
+      }
+
+      await bookingsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            status: "cancelled",
+            cancelledAt: new Date(),
+          },
         }
+      );
 
-        const booking =
-          await bookingsCollection.findOne({
-            _id: new ObjectId(id),
-          });
-
-        if (!booking) {
-          return res.status(404).send({
-            success: false,
-            message: "Booking Not Found",
-          });
-        }
-
-        // update status
-        await bookingsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              status: "cancelled",
-            },
-          }
-        );
-
-        // return slot
+      if (ObjectId.isValid(booking.tutorId)) {
         await tutorsCollection.updateOne(
           { _id: new ObjectId(booking.tutorId) },
           {
             $inc: { totalSlot: 1 },
           }
         );
-
-        res.send({
-          success: true,
-          message: "Booking Cancelled",
-        });
-
-      } catch (error) {
-
-        console.log(error);
-
-        res.status(500).send({
-          success: false,
-          message: "Cancel Failed",
-        });
       }
+
+      res.send({
+        success: true,
+        message: "Booking cancelled successfully",
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).send({
+        success: false,
+        message: "Cancel failed",
+      });
     }
-  );
+  });
 
   return router;
 };
