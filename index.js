@@ -41,7 +41,6 @@ const client = new MongoClient(MONGODB_URI, {
 app.use(
   cors({
     origin: ["http://localhost:3000"],
-    ["https://a09-tutor-booking-server-wwy8.vercel.app/"],
     credentials: true,
   })
 );
